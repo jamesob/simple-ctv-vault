@@ -475,39 +475,6 @@ def main():
     exec.sweep_to_hot(hot_wallet.privkey)
 
 
-def basic_spend(addr: str, privkey: bytes, txid: str, input_amount_sats: int):
-    key = CBitcoinSecret(privkey)
-    MIN_RELAY_FEE = 110
-    amt = input_amount_sats - MIN_RELAY_FEE
-    out_scriptpubkey = CScript([OP_0, Hash160(key.pub)])
-    assert out_scriptpubkey.is_witness_v0_keyhash()
-
-    gen_addr = P2WPKHBitcoinAddress.from_scriptPubKey(out_scriptpubkey)
-    assert addr == str(gen_addr)
-
-    tx = CMutableTransaction()
-    tx.nVersion = 2
-    tx.vin = [CTxIn(COutPoint(lx(txid), 0))]
-    tx.vout = [CTxOut(amt, out_scriptpubkey)]
-
-    redeem_script = gen_addr.to_redeemScript()
-    sighash = SignatureHash(
-        redeem_script,
-        tx,
-        0,
-        SIGHASH_ALL,
-        amount=input_amount_sats,
-        sigversion=SIGVERSION_WITNESS_V0,
-    )
-
-    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
-    wit = [CTxInWitness(CScriptWitness([sig, key.pub]))]
-    tx.wit = CTxWitness(wit)
-
-    print(f"sending {amt} -> {str(gen_addr)}")
-    print(tx.serialize().hex())
-
-
 def _pytest_ctv_hash():
     data = json.loads(Path("ctvhash-test-vectors.json").read_bytes())[1:-1]
     tests = 0
