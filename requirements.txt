@@ -1,2 +1,2 @@
 python-bitcoinlib
-buidl
+git+https://github.com/buidl-bitcoin/buidl-python
