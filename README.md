@@ -14,6 +14,14 @@ The code included here is intended to be approachable and easy to read, though
 it would probably need review and tweaking before real-world use. It should be
 considered a toy in its current form.
 
+```mermaid
+flowchart TD
+  A(UTXO you want to vault) --> V(Coin in vault)
+  V --> U("Begin the unvaulting process<br/>&lpar;broadcast unvault tx&rpar;")
+  U --> C("To the cold wallet<br/>&lpar;immediately&rpar;")
+  U --> D("To the hot wallet<br/>&lpar;after an n block delay&rpar;")
+```
+
 ### Vault basics
 
 *Vaulting* is a technique for putting constraints around how bitcoins can be spent.
@@ -33,20 +41,15 @@ as the "cold" wallet immediately, or they can begin the unvault process and, aft
 block delay configurable by the user, spend the coins to a key designated as the
 "hot" wallet.
 
-```mermaid
-flowchart TD
-  A(UTXO you want to vault) --> V(Coin in vault)
-  V --> U("Begin the unvaulting process<br/>&lpar;broadcast unvault tx&rpar;")
-  U --> C("To the cold wallet<br/>&lpar;immediately&rpar;")
-  U --> D("To the hot wallet<br/>&lpar;after an n block delay&rpar;")
-```
-
 This allows the user to intervene if they see that an unvault process
 has been started unexpectedly: if an attacker Mallory gains control of the user Alice's hot wallet and wants to 
 steal the vaulted coins, Mallory has to broadcast the unvault transaction. If Alice
 is watching the mempool/chain, she will see that the unvault transaction has been
 unexpectedly broadcast, and she can immediately sweep the balance to her cold wallet,
 while Mallory must wait the block delay to succeed in stealing funds.
+
+![image](https://user-images.githubusercontent.com/73197/156897136-7b230766-4fa0-4c77-ab6f-6e865120f1d9.png)
+
 
 ### Vault complexity 
 
@@ -58,24 +61,58 @@ The vault pattern implemented here is "limited" - it entails a single decision p
 unvaults the entire value. Despite being limited, this still provides high utility 
 for users. In fact, its simplicity may make it preferable to more complicated schemes.
 
+## Hands-on example
+
+Now that we have the general stuff out of the way, let's actually build some vaults.
+You can read through the following step-by-step without actually running the code
+yourself.
+
+```sh
+$ git clone https://github.com/jamesob/simple-ctv-vault
+$ cd simple-ctv-vault
+$ pip install -r requirements.txt
+
+# build this bitcoin branch
+#  https://github.com/JeremyRubin/bitcoin/tree/checktemplateverify-rebase-4-15-21
+$ bitcoind -regtest -txindex=1 &
+```
+
+Okay, we're ready to go.
+
+### Creating a vault
+
+```sh
+$ TXID=$(./main.py vault)
+```
+
+![image](https://user-images.githubusercontent.com/73197/156897173-c8095fc6-ce39-47cf-85d7-3ac0f86ca2c8.png)
+
+
+At this point, we've generated a coin on regtest and have spent it into a new vault.
+`$TXID` corresponds to the transaction ID of the coin we created the vault with,
+which is the only piece of information we need to reconstruct the vault plan and
+resume operations.
+
+We've built a vault which looks like this:
 
 ```mermaid
 flowchart TD
   A(UTXO you want to vault) -->|"[some spend] e.g. P2WPKH"| V(to_vault_tx<br/>Coins are now vaulted)
   V -->|"<code>&lt;H(unvault_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| U(unvault_tx<br/>Begin the unvaulting process)
-  U -->|"<code>&lt;H(to_cold_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| C(to_cold_tx)
-  U -->|"<code>&lt;block_delay&gt; OP_CSV<br />&lt;hot_pubkey&gt; OP_CHECKSIG</code>"| D(<code>to_hot</code> tx)
+  U -->|"<code>&lt;H(tocold_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| C(tocold_tx)
+  U -->|"<code>&lt;block_delay&gt; OP_CSV<br />&lt;hot_pubkey&gt; OP_CHECKSIG</code>"| D(<code>tohot_tx</code>)
   C -->|"<code>&lt;cold_pubkey&gt; OP_CHECKSIG</code>"| E(some undefined destination)
 ```
 
-For now: `pip install -r requirements.txt && ./main.py`.
+This sort of enforced flow is currently only possible if we presign `tocold_tx` and `tohot_tx`,
+ensure we hold onto the transaction data, and then destroy the key. This locks the spend path
+of the coins into the two prewritten transactions, and saddles us with the operational burden
+of persisting that critical data indefinitely.
+
+Use of `OP_CHECKTEMPLATEVERIFY` allows us to use a covenant structure and avoid having to rely
+on presigned transactions. With `<hash> OP_CTV`, we can ensure that *consensus itself* enforces all the
+ways we can spend an output.
 
 ## Prior work
 - Vaults by kanzure: https://github.com/kanzure/python-vaults
-
-- What do I need to keep track of?
-  - just the algorithm
-  - vs. presigned txns, which are bearer assets - data needs to be stored for
-    perpetuity
-
-- How do fees work?
+- `OP_CTV` PR by JeremyRubin: https://github.com/bitcoin/bitcoin/pull/21702
