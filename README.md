@@ -104,15 +104,101 @@ flowchart TD
   C -->|"<code>&lt;cold_pubkey&gt; OP_CHECKSIG</code>"| E(some undefined destination)
 ```
 
-This sort of enforced flow is currently only possible if we presign `tocold_tx` and `tohot_tx`,
+When we create the vault, we encumber the coin with a `scriptPubKey` that looks like this:
+```python
+[unvault_ctv_hash, OP_CHECKTEMPLATEVERIFY]
+```
+where the first item is a hash of the tree of template transactions (the tree illustrated above). 
+
+#### Why CTV?
+
+The enforced flow of a vault is currently only possible if we presign `tocold_tx` and `tohot_tx`,
 ensure we hold onto the transaction data, and then destroy the key. This locks the spend path
-of the coins into the two prewritten transactions, and saddles us with the operational burden
+of the coins into the two prewritten transactions. But it saddles us with the operational burden
 of persisting that critical data indefinitely.
 
 Use of `OP_CHECKTEMPLATEVERIFY` allows us to use a covenant structure and avoid having to rely
 on presigned transactions. With `<hash> OP_CTV`, we can ensure that *consensus itself* enforces all the
 ways we can spend an output.
 
+Other consensus change proposals can do this, but CTV is very simple and easy to reason about. It
+requires pre-computing the tree of all possible spend paths.
+
+### Unvaulting
+
+![image](https://user-images.githubusercontent.com/73197/156897769-45ee85cc-e626-4b7a-9bd4-df471b1b9026.png)
+
+
+When we initiate an unvault, we broadcast a transaction that satisfies the `OP_CTV` script above;
+the script encumbering the unvault output looks something like
+```python
+    def unvault_redeemScript(self) -> CScript:
+        return CScript(
+            [
+                script.OP_IF,
+                    self.block_delay, script.OP_CHECKSEQUENCEVERIFY, script.OP_DROP,
+                    self.hot_pubkey.sec(), script.OP_CHECKSIG,
+                script.OP_ELSE,
+                    self.tocold_ctv_hash, OP_CHECKTEMPLATEVERIFY,
+            ]
+        )
+```
+This ensures we have two choices: spend immediately to the cold wallet, or wait a few blocks and spend
+to the hot wallet. 
+
+### Detecting theft
+
+This unvault step is critical because it allows us to detect unexpected behavior. If an attacker
+had stolen our hot wallet keys, their only choice to succeed in the theft is to trigger an unvault.
+
+![image](https://user-images.githubusercontent.com/73197/156897788-d2f96a48-ac92-4038-bf59-8d3fbf355685.png)
+
+We can monitor for such an event and respond by sweeping our keys to the cold wallet.
+
+![image](https://user-images.githubusercontent.com/73197/156897846-3e53a7cc-6879-4b28-beb0-5bd7605e563d.png)
+
+### Why does `tocold` make use of another CTV?
+
+You'll notice that the hot-path requires signing with the hot private key to claim the funds. Because we
+want to be able to respond immediately, and not have to dig out our cold private keys, we use an 
+additional `OP_CTV` to encumber the "swept" coins for spending by only the cold wallet key.
+
+## Fee management
+
+Because coins may remain vaulted for long periods of time, the unvault process is subject to 
+changes in the fee market. Because use of OP_CTV requires precommiting to a tree of possible
+outputs, we cannot use RBF to dynamically adjust feerate of unvaulting transactions.
+
+In this implementation, we make use of [anchor outputs](https://bitcoinops.org/en/topics/anchor-outputs/)
+in order to allow mummified unvault transactions to have their feerate adjusted dynamically.
+
+```python
+def p2wpkh_tx_template(...) -> CMutableTransaction:
+    """Create a transaction template paying into a P2WPKH."""
+    pay_to_script = CScript([script.OP_0, pay_to_h160])
+
+    pay_to_fee_script = CScript([script.OP_0, fee_mgmt_pay_to_h160])
+    HOPEFULLY_NOT_DUST: Sats = 550  # obviously TOOD?
+
+    tx = CMutableTransaction()
+    tx.nVersion = 2
+    tx.vin = vin
+    tx.vout = [
+        CTxOut(nValue, pay_to_script),
+        # Anchor output for CPFP-based fee bumps
+        CTxOut(HOPEFULLY_NOT_DUST, pay_to_fee_script),
+    ]
+    return tx
+```
+
+This points to the tension between covenants and fee management. As I noted in 
+a [mailinglist post](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2022-February/019879.html), a 
+fee management technique that doesn't require structural anticipation and chain-waste
+like CPFP via anchor outputs would be most welcome. 
+[Transaction sponsors](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2020-September/018168.html)
+is an interesting approach.
+
 ## Prior work
+
 - Vaults by kanzure: https://github.com/kanzure/python-vaults
 - `OP_CTV` PR by JeremyRubin: https://github.com/bitcoin/bitcoin/pull/21702
