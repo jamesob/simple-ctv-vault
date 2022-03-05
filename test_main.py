@@ -6,7 +6,7 @@ from bitcoin.core import CTransaction, COIN
 
 from rpc import JSONRPCError
 from main import (
-    VaultContext,
+    VaultScenario,
     generateblocks,
     get_standard_template_hash,
 )
@@ -27,7 +27,7 @@ def _run_functional_test(ends_in_hot=True):
             we preempt and sweep to cold.
     """
     block_delay = 3
-    c = VaultContext.from_network("regtest", seed=b"functest", block_delay=block_delay)
+    c = VaultScenario.from_network("regtest", seed=b"functest", block_delay=block_delay)
     exec = c.exec
     plan = c.plan
     rpc = c.rpc

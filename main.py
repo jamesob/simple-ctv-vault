@@ -1,6 +1,44 @@
 #!/usr/bin/env python3
+"""
+Implementation of a simple OP_CTV vault.
+
+          output you're spending from
+                     |
+             tovault_tx output
+                (<H> OP_CTV)
+                     |
+                 unvault_tx
+        (OP_CSV hot_pk | (<H(tocold_tx)> OP_CTV)
+              /               \
+        tohot_tx           tocold_tx
+                        (cold_pk OP_CHECKSIG)
+
+
+Example usage:
+
+  # Initialize a vault
+  TXID=$(./main.py vault)
+
+  # Trigger an unvault
+  ./main.py unvault $TXID
+
+  # Detect the unvault
+  ./main.py alert-on-unvault $TXID
+
+  # Generate some blocks
+  ./main.py generate-blocks 1
+
+  # Attempt to claim the vault to the hot wallet
+  ./main.py to-hot $TXID
+
+  # Sweep the vault immediately to the cold wallet
+  ./main.py to-cold $TXID
+
+"""
 import struct
 import hashlib
+import sys
+import pprint
 import typing as t
 from dataclasses import dataclass
 
@@ -22,11 +60,11 @@ from bitcoin.core import script
 from bitcoin.wallet import CBech32BitcoinAddress
 from buidl.hd import HDPrivateKey, PrivateKey
 from buidl.ecc import S256Point
-from rpc import BitcoinRPC
+from rpc import BitcoinRPC, JSONRPCError
 from clii import App
 
 
-cli = App()
+cli = App(usage=__doc__)
 
 OP_CHECKTEMPLATEVERIFY = script.OP_NOP4
 
@@ -107,13 +145,13 @@ class Wallet:
 @dataclass
 class VaultPlan:
     """
-    Tempalte and generate transactions for a one-hop vault structure based on
+    Template and generate transactions for a one-hop vault structure based on
     OP_CHECKTEMPLATEVERIFY.
 
 
           output you're spending from              amount0
                      |
-             tovault_tx output                    amount1
+             tovault_tx output                     amount1
                 (<H> OP_CTV)
                      |
                  unvault_tx                        amount2
@@ -429,24 +467,20 @@ class VaultExecutor:
     log: t.Callable = no_output
 
     def send_to_vault(self, coin: Coin, spend_key: PrivateKey) -> TxidStr:
-        self.log(bold("\n# Sending to vault\n"))
+        self.log(bold("# Sending to vault\n"))
 
-        spend_addr = CBech32BitcoinAddress.from_scriptPubKey(CScript(coin.scriptPubKey))
-        self.log(f"Spending coin ({spend_addr})\n  {coin}\ninto vault")
+        self.log(f"Spending coin ({coin.outpoint}) {bold(f'({coin.amount} sats)')}")
         (tx, hx) = self._print_signed_tx(self.plan.sign_tovault_tx, spend_key)
 
         txid = self.rpc.sendrawtransaction(hx)
-        assert txid == tx.GetTxid()[::-1].hex()
+        assert txid == tx.GetTxid()[::-1].hex() == self.plan.tovault_txid
 
-        self.log("Coins are vaulted!")
-        self.log(f"Scan for the vault scriptpubkey: {tx.vout[0].scriptPubKey.hex()}")
-        self.log(
-            f"Scan for the unvault scriptpubkey: {self.plan.unvault_tx_template.vout[0].scriptPubKey.hex()}"
-        )
+        self.log()
+        self.log(f"Coins are vaulted at {green(txid)}")
         return txid
 
     def start_unvault(self) -> TxidStr:
-        self.log(bold("\n# Starting unvault\n"))
+        self.log(bold("# Starting unvault"))
 
         _, hx = self._print_signed_tx(self.plan.sign_unvault_tx)
         txid = self.rpc.sendrawtransaction(hx)
@@ -455,14 +489,14 @@ class VaultExecutor:
 
     def get_tocold_tx(self) -> CTransaction:
         cold_addr = self.plan.cold_pubkey.p2wpkh_address(self.rpc.net_name)
-        self.log(bold(f"\n# Sweep to cold ({cold_addr})\n"))
+        self.log(bold(f"# Sweep to cold ({cold_addr})\n"))
 
         (tx, _) = self._print_signed_tx(self.plan.sign_tocold_tx)
         return tx
 
     def get_tohot_tx(self, hot_privkey) -> CTransaction:
         hot_addr = self.plan.hot_pubkey.p2wpkh_address(self.rpc.net_name)
-        self.log(bold(f"\n\n# Sweep to hot ({hot_addr})"))
+        self.log(bold(f"# Sweep to hot ({hot_addr})"))
 
         (tx, _) = self._print_signed_tx(self.plan.sign_tohot_tx, hot_privkey)
         return tx
@@ -492,9 +526,13 @@ class VaultExecutor:
         """Plan a finalized transaction and print its broadcast information."""
         tx = signed_txn_fnc(*args, **kwargs)
         hx = tx.serialize().hex()
-        self.log(f"\nTransaction {yellow(tx.GetTxid()[::-1].hex())}")
-        self.log(f"\n{tx}\n")
-        self.log(f"Raw hex:\n{hx}")
+
+        self.log(bold(f"\n## Transaction {yellow(tx.GetTxid()[::-1].hex())}"))
+        self.log(f"{tx}")
+        self.log()
+        self.log(f"### Raw hex")
+        self.log(hx)
+
         return tx, hx
 
 
@@ -564,7 +602,7 @@ def scan_utxos(rpc, addr):
 
 
 @dataclass
-class VaultContext:
+class VaultScenario:
     """Instantiate everything needed to do vault operations."""
 
     network: str
@@ -609,46 +647,113 @@ class VaultContext:
             exec=VaultExecutor(plan, rpc, coin),
         )
 
+    @classmethod
+    def for_demo(cls, original_coin_txid: TxidStr = None) -> 'VaultScenario':
+        """
+        Instantiate a scenario for the demo, optionally resuming an existing
+        vault using the txid of the coin we spent into it.
+        """
+        coin_in = None
+        if original_coin_txid:
+            # We're resuming a vault
+            rpc = BitcoinRPC(net_name="regtest")
+            coin_in = Coin.from_txid(original_coin_txid, 0, rpc)
 
-@cli.main
-def main():
-    c = VaultContext.from_network("regtest", seed=b"demo", block_delay=10)
-    c.exec.log = print
+        c = VaultScenario.from_network(
+            "regtest", seed=b"demo", coin=coin_in, block_delay=10
+        )
+        c.exec.log = lambda *args, **kwargs: print(*args, file=sys.stderr, **kwargs)
 
-    c.exec.send_to_vault(c.coin_in, c.from_wallet.privkey)
-    assert not c.exec.search_for_unvault()
-
-    c.exec.start_unvault()
-    assert c.exec.search_for_unvault() == "mempool"
-
-    c.exec.get_tocold_tx()
-    c.exec.get_tohot_tx(c.hot_wallet.privkey)
-
-
-@cli.cmd
-def create_vault():
-    c = VaultContext.from_network("regtest", seed=b"demo", block_delay=10)
-    c.exec.log = print
-
-    c.exec.send_to_vault(c.coin_in, c.from_wallet.privkey)
-    assert not c.exec.search_for_unvault()
-    print(f"\nArgument to next (txid): {yellow(c.coin_in.outpoint.hash[::-1].hex())})")
+        return c
 
 
 @cli.cmd
-def start_unvault(coin_in_txid: str):
+def vault():
+    """
+    Returns the txid of the coin spent into the vault, which is used to resume vault
+    operations.
+    """
+    c = VaultScenario.for_demo()
+
+    c.exec.send_to_vault(c.coin_in, c.from_wallet.privkey)
+    assert not c.exec.search_for_unvault()
+    original_coin_txid = c.coin_in.outpoint.hash[::-1].hex()
+    print(original_coin_txid)
+
+
+@cli.cmd
+def unvault(original_coin_txid: TxidStr):
     """
     Start the unvault process with an existing vault, based on the orignal coin
     input.
 
     We assume the original coin has a vout index of 0.
-    """
-    rpc = BitcoinRPC(net_name="regtest")
-    coin_in = Coin.from_txid(coin_in_txid, 0, rpc)
-    c = VaultContext.from_network("regtest", seed=b"demo", coin=coin_in, block_delay=10)
-    c.exec.log = print
 
+    Args:
+        original_coin_txid: the txid of the original coin we spent into the vault.
+    """
+    c = VaultScenario.for_demo(original_coin_txid)
     c.exec.start_unvault()
+
+
+@cli.cmd
+def generate_blocks(n: int):
+    rpc = BitcoinRPC(net_name="regtest")
+    pprint.pprint(generateblocks(rpc, n))
+
+
+@cli.cmd
+def alert_on_unvault(original_coin_txid: TxidStr):
+    c = VaultScenario.for_demo(original_coin_txid)
+    c.exec.log = no_output
+    unvault_location = c.exec.search_for_unvault()
+
+    if unvault_location:
+        print(f"Unvault txn detected in {red(unvault_location)}!")
+        print(f"If this is unexpected, {red('sweep to cold now')} with ")
+        print(yellow("\n  ./main.py to-cold {original_coin_txid}"))
+        sys.exit(1)
+
+
+@cli.cmd
+def to_hot(original_coin_txid: TxidStr):
+    """Spend funds to the hot wallet."""
+    c = VaultScenario.for_demo(original_coin_txid)
+    tx = c.exec.get_tohot_tx(c.hot_wallet.privkey)
+    _broadcast_final(c, tx, 'hot')
+
+
+@cli.cmd
+def to_cold(original_coin_txid: TxidStr):
+    """Sweep funds to the cold wallet."""
+    c = VaultScenario.for_demo(original_coin_txid)
+    tx = c.exec.get_tocold_tx()
+    _broadcast_final(c, tx, 'cold')
+
+
+def _broadcast_final(c: VaultScenario, tx: CTransaction, hot_or_cold: str):
+    print()
+    if hot_or_cold == 'cold':
+        title = f"CTV-encumbering to {cyan('cold')}"
+    else:
+        title = f"spending to {red('hot')}"
+
+    if input(f"Broadcast transaction {title}? (y/n) ") == 'y':
+        try:
+            txid = c.rpc.sendrawtransaction(tx.serialize().hex())
+        except JSONRPCError as e:
+            if 'non-BIP68' in e.msg:
+                print("!!! can't broadcast to hot - OP_CSV fails")
+                sys.exit(2)
+            elif 'missingorspent' in e.msg:
+                print("!!! can't broadcast - unvault txn hasn't been seen yet")
+                sys.exit(3)
+            else:
+                raise
+
+        print(f"Broadcast done: {green(txid)}")
+        print()
+        pprint.pprint(c.rpc.gettxout(txid, 0))
 
 
 if __name__ == "__main__":
