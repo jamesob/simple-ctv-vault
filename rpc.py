@@ -1,3 +1,15 @@
+# Copyright (C) 2007 Jan-Klaas Kollhof
+# Copyright (C) 2011-2018 The python-bitcoinlib developers
+# Copyright (C) 2022 James O'Beirne
+#
+# This file is part of python-bitcoinlib.
+#
+# It is subject to the license terms in the LICENSE file found in the top-level
+# directory of this distribution.
+#
+# No part of python-bitcoinlib, including this file, may be copied, modified,
+# propagated, or distributed except according to the terms contained in the
+# LICENSE file.
 import json
 import logging
 import typing as t

@@ -1,17 +1,12 @@
-import random
 import json
-import hashlib
 from pathlib import Path
 
 import pytest
-from bitcoin import SelectParams
 from bitcoin.core import CTransaction, COIN
 
-from rpc import BitcoinRPC, JSONRPCError
+from rpc import JSONRPCError
 from main import (
-    Wallet,
-    VaultPlan,
-    VaultExecutor,
+    VaultContext,
     generateblocks,
     get_standard_template_hash,
 )
@@ -32,26 +27,11 @@ def _run_functional_test(ends_in_hot=True):
             we preempt and sweep to cold.
     """
     block_delay = 3
-    network = "regtest"
-    SelectParams(network)
-
-    rpc = BitcoinRPC(net_name=network)
-    fee_wallet = Wallet.generate(b"fee-functest")
-    balance_wallet = Wallet.generate(b"balance-functest")
-    cold_wallet = Wallet.generate(b"cold-functest")
-    hot_wallet = Wallet.generate(b"hot-functest")
-
-    balance_wallet.fund(rpc)
-    coin = balance_wallet.fund(rpc)
-
-    plan = VaultPlan(
-        hot_wallet.privkey.point,
-        cold_wallet.privkey.point,
-        fee_wallet.privkey.point,
-        coin.amount,
-        block_delay=block_delay,
-    )
-    exec = VaultExecutor(plan, rpc)
+    c = VaultContext.from_network("regtest", seed=b"functest", block_delay=block_delay)
+    exec = c.exec
+    plan = c.plan
+    rpc = c.rpc
+    coin = c.coin_in
 
     initial_amount = coin.amount
     expected_amount_per_step = [
@@ -65,25 +45,23 @@ def _run_functional_test(ends_in_hot=True):
         got_amt = (rpc.gettxout(txid, n) or {}).get('value', 0)
         assert int(got_amt * COIN) == expected_amount
 
-    vaulted_txid = exec.send_to_vault(coin, balance_wallet.privkey)
+    vaulted_txid = exec.send_to_vault(coin, c.from_wallet.privkey)
     assert not exec.search_for_unvault()
 
     check_amount(vaulted_txid, 0, expected_amount_per_step[1])
 
-    exec.get_unvault_tx()
+    tocold_tx = exec.get_tocold_tx()
+    tocold_hex = tocold_tx.serialize().hex()
 
-    to_cold_tx = exec.get_to_cold_tx()
-    to_cold_hex = to_cold_tx.serialize().hex()
-
-    to_hot_tx = exec.get_to_hot_tx(hot_wallet.privkey)
-    to_hot_hex = to_hot_tx.serialize().hex()
+    tohot_tx = exec.get_tohot_tx(c.hot_wallet.privkey)
+    tohot_hex = tohot_tx.serialize().hex()
 
     # Shouldn't be able to send particular unvault txs yet.
     with pytest.raises(JSONRPCError):
-        rpc.sendrawtransaction(to_cold_hex)
+        rpc.sendrawtransaction(tocold_hex)
 
     with pytest.raises(JSONRPCError):
-        rpc.sendrawtransaction(to_hot_hex)
+        rpc.sendrawtransaction(tohot_hex)
 
     unvaulted_txid = exec.start_unvault()
 
@@ -93,7 +71,7 @@ def _run_functional_test(ends_in_hot=True):
 
     with pytest.raises(JSONRPCError):
         # to-hot should fail due to OP_CSV
-        rpc.sendrawtransaction(to_hot_hex)
+        rpc.sendrawtransaction(tohot_hex)
 
     # Unvault tx confirms
     generateblocks(rpc, 1)
@@ -101,19 +79,19 @@ def _run_functional_test(ends_in_hot=True):
 
     with pytest.raises(JSONRPCError):
         # to-hot should *still* fail due to OP_CSV
-        rpc.sendrawtransaction(to_hot_hex)
+        rpc.sendrawtransaction(tohot_hex)
 
     if ends_in_hot:
         # Mine enough blocks to allow the to-hot to be valid, send it.
         generateblocks(rpc, block_delay - 1)
 
-        txid = rpc.sendrawtransaction(to_hot_hex)
-        assert txid == to_hot_tx.GetTxid()[::-1].hex()
+        txid = rpc.sendrawtransaction(tohot_hex)
+        assert txid == tohot_tx.GetTxid()[::-1].hex()
     else:
         # "Sweep" the funds to the cold wallet because this is an unvaulting
         # we didn't expect.
-        txid = rpc.sendrawtransaction(to_cold_hex)
-        assert txid == to_cold_tx.GetTxid()[::-1].hex()
+        txid = rpc.sendrawtransaction(tocold_hex)
+        assert txid == tocold_tx.GetTxid()[::-1].hex()
 
     generateblocks(rpc, 1)
     txout = rpc.gettxout(txid, 0)
