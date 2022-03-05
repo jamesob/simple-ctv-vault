@@ -456,6 +456,7 @@ def p2wpkh_tx_template(
 
     pay_to_fee_script = CScript([script.OP_0, fee_mgmt_pay_to_h160])
     assert pay_to_fee_script.is_witness_v0_keyhash()
+    HOPEFULLY_NOT_DUST: Sats = 550   # obviously TOOD?
 
     tx = CMutableTransaction()
     tx.nVersion = 2
@@ -463,7 +464,7 @@ def p2wpkh_tx_template(
     tx.vout = [
         CTxOut(nValue, pay_to_script),
         # Anchor output for CPFP-based fee bumps
-        # CTxOut(0, pay_to_fee_script),
+        CTxOut(HOPEFULLY_NOT_DUST, pay_to_fee_script),
     ]
     return tx
 

@@ -122,6 +122,12 @@ def _run_functional_test(ends_in_hot=True):
     check_amount(vaulted_txid, 0, 0)
     check_amount(unvaulted_txid, 0, 0)
 
+    anchor_txout = rpc.gettxout(txid, 1)
+    print(anchor_txout)
+    fees_addr = plan.fees_pubkey.p2wpkh_address(rpc.net_name)
+    assert anchor_txout['value'] > 0
+    assert anchor_txout['scriptPubKey']['address'] == fees_addr
+
 
 def test_ctv_hash():
     data = json.loads(Path("ctvhash-test-vectors.json").read_bytes())[1:-1]
