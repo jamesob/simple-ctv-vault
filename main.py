@@ -126,7 +126,7 @@ class VaultPlan:
     # What percentage of the amount are we taking in fees at each step of the vault?
     # Note this isn't how you'd actually do it (would want to specify feerate),
     # but is a simplification for this demo.
-    # fee_perc: float = 0.01
+    fees_per_step: Sats = 10000
 
     def amount_at_step(self, step=0) -> Sats:
         """
@@ -134,8 +134,7 @@ class VaultPlan:
         "amount[n]" in the diagram above.
         """
         # In reality, you'd compute feerate per step and use that. (TODO)
-        fees_per_step: Sats = 10000
-        amt = self.amount_in - (fees_per_step * step)
+        amt = self.amount_in - (self.fees_per_step * step)
         assert amt > 0
         return amt
 
@@ -164,11 +163,8 @@ class VaultPlan:
         # Standard p2wpkh redeemScript
         redeem_script = CScript(
             [
-                script.OP_DUP,
-                script.OP_HASH160,
-                spend_from_addr,
-                script.OP_EQUALVERIFY,
-                script.OP_CHECKSIG,
+                script.OP_DUP, script.OP_HASH160, spend_from_addr,
+                script.OP_EQUALVERIFY, script.OP_CHECKSIG,
             ]
         )
 

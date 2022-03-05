@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from bitcoin import SelectParams
-from bitcoin.core import CTransaction
+from bitcoin.core import CTransaction, COIN
 
 from rpc import BitcoinRPC, JSONRPCError
 from main import (
@@ -35,8 +35,6 @@ def _run_functional_test(ends_in_hot=True):
     network = "regtest"
     SelectParams(network)
 
-    test_suffix = hashlib.sha256(str(random.random()).encode()).hexdigest()[:6]
-
     rpc = BitcoinRPC(net_name=network)
     fee_wallet = Wallet.generate(b"fee-functest")
     balance_wallet = Wallet.generate(b"balance-functest")
@@ -54,10 +52,25 @@ def _run_functional_test(ends_in_hot=True):
         block_delay=block_delay,
     )
     exec = VaultExecutor(plan, rpc)
-    exec.send_to_vault(coin, balance_wallet.privkey)
+
+    initial_amount = coin.amount
+    expected_amount_per_step = [
+        initial_amount,  # before vaulting
+        initial_amount - (plan.fees_per_step * 1),  # step 1: vaulted output
+        initial_amount - (plan.fees_per_step * 2),  # step 2: unvaulted output
+        initial_amount - (plan.fees_per_step * 3),  # step 3: spent to hot or cold
+    ]
+
+    def check_amount(txid, n, expected_amount):
+        got_amt = (rpc.gettxout(txid, n) or {}).get('value', 0)
+        assert int(got_amt * COIN) == expected_amount
+
+    vaulted_txid = exec.send_to_vault(coin, balance_wallet.privkey)
     assert not exec.search_for_unvault()
 
-    unvault_tx = exec.get_unvault_tx()
+    check_amount(vaulted_txid, 0, expected_amount_per_step[1])
+
+    exec.get_unvault_tx()
 
     to_cold_tx = exec.get_to_cold_tx()
     to_cold_hex = to_cold_tx.serialize().hex()
@@ -72,8 +85,11 @@ def _run_functional_test(ends_in_hot=True):
     with pytest.raises(JSONRPCError):
         rpc.sendrawtransaction(to_hot_hex)
 
-    exec.start_unvault()
+    unvaulted_txid = exec.start_unvault()
+
     assert exec.search_for_unvault() == "mempool"
+    check_amount(unvaulted_txid, 0, expected_amount_per_step[2])
+    check_amount(vaulted_txid, 0, 0)
 
     with pytest.raises(JSONRPCError):
         # to-hot should fail due to OP_CSV
@@ -102,6 +118,9 @@ def _run_functional_test(ends_in_hot=True):
     generateblocks(rpc, 1)
     txout = rpc.gettxout(txid, 0)
     assert txout["confirmations"] == 1
+    check_amount(txid, 0, expected_amount_per_step[3])
+    check_amount(vaulted_txid, 0, 0)
+    check_amount(unvaulted_txid, 0, 0)
 
 
 def test_ctv_hash():
