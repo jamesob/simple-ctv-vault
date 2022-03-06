@@ -219,6 +219,24 @@ def p2wpkh_tx_template(...) -> CMutableTransaction:
     return tx
 ```
 
+### Fee key risk
+
+One of the downsides of anchor outputs is that their use requires committing to the fee
+address that is able to child-pays-for-parent (CPFP) fee bump the unvault transaction.
+If the expected lifetime of a vault is for multiple years, ensuring that the fee
+key isn't destroyed or compromised is an unfortunate obligation.
+
+If the fee key were made unavailable for whatever reason, the unvaulting process would
+be at the whim of the prevailing fee market during time of unvault. If the fee-bump
+keys are lost and the fee market has gone well beyond the predetermined fee rate of the
+unvault transaction, the coins basically become unredeemable without unearthing the
+cold storage keys for a CPFP bump.
+
+Note that this is not an inherent risk to vaults per se, but the specific method of 
+using anchor outpoints for long-term vaults.
+
+### Transaction sponsors
+
 This points to the tension between covenants and fee management. As I noted in 
 a [mailinglist post](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2022-February/019879.html), a 
 fee management technique that doesn't require structural anticipation and chain-waste
@@ -226,6 +244,10 @@ like CPFP via anchor outputs would be most welcome.
 [Transaction sponsors](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2020-September/018168.html)
 is an interesting approach.
 
+Another possibility is to have a more granular sighash (like
+[SIGHASH_GROUP](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2021-July/019243.html))
+that allows vault transactions to be combined dynamically with fee-bump input/output
+packages.
 
 ## Patterns for industrial users
 
