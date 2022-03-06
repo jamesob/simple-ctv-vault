@@ -1,18 +1,16 @@
 # Safer custody with CTV vaults
 
-**Abstract:** This demonstrates an implementation of simple, "single-hop" vaults
+This repository demonstrates an implementation of simple, "single-hop" vaults
 using the proposed `OP_CHECKTEMPLATEVERIFY` opcode. 
 
-OP_CTV allows the vault strategy
-to be used without the need to maintain critical presigned transaction data for the lifetime of the vault, as in
-the case of previous vault implementations. This
-approach is much simpler operationally, since all relevant data aside from key
-material can be regenerated algorithmically. This makes vaulting, which increases
-custodial safety significantly, more practical at any scale.
+OP_CTV allows the vault strategy to be used without the need to maintain critical
+presigned transaction data for the lifetime of the vault, as in the case of earlier
+vault implementations. This approach is much simpler operationally, since all relevant
+data aside from key material can be regenerated algorithmically. This makes vaulting
+more practical at any scale.
 
 The code included here is intended to be approachable and easy to read, though
-it would probably need review and tweaking before real-world use. It should be
-considered a toy in its current form.
+it would need review and tweaking before use with real funds.
 
 ```mermaid
 flowchart TD
@@ -46,9 +44,14 @@ has been started unexpectedly: if an attacker Mallory gains control of the user 
 steal the vaulted coins, Mallory has to broadcast the unvault transaction. If Alice
 is watching the mempool/chain, she will see that the unvault transaction has been
 unexpectedly broadcast, and she can immediately sweep the balance to her cold wallet,
-while Mallory must wait the block delay to succeed in stealing funds.
+while Mallory must wait the block delay to succeed in stealing funds from the hot
+wallet.
 
 ![image](https://user-images.githubusercontent.com/73197/156897136-7b230766-4fa0-4c77-ab6f-6e865120f1d9.png)
+
+This scheme could also be adapted to limit trust in any particular hardware
+vendor. Hardware vendor A could serve as the hot wallet, and some multisig combination
+of vendors B and C could serve the more secure but less convenient "cold" role.
 
 
 ### Vault complexity 
@@ -61,10 +64,10 @@ The vault pattern implemented here is "limited" - it entails a single decision p
 unvaults the entire value. Despite being limited, this still provides high utility 
 for users. In fact, its simplicity may make it preferable to more complicated schemes.
 
-## Hands-on example
+## Demo
 
-Now that we have the general stuff out of the way, let's actually build some vaults.
-You can read through the following step-by-step without actually running the code
+Now that we have background out of the way, let's actually build some vaults.
+You can read through the following without actually running the code
 yourself.
 
 ```sh
@@ -89,7 +92,7 @@ $ TXID=$(./main.py vault)
 
 
 At this point, we've generated a coin on regtest and have spent it into a new vault.
-`$TXID` corresponds to the transaction ID of the coin we created the vault with,
+`$TXID` corresponds to the transaction ID of the coin we spent into the vault,
 which is the only piece of information we need to reconstruct the vault plan and
 resume operations.
 
@@ -99,8 +102,8 @@ We've built a vault which looks like this:
 flowchart TD
   A(UTXO you want to vault) -->|"[some spend] e.g. P2WPKH"| V(to_vault_tx<br/>Coins are now vaulted)
   V -->|"<code>&lt;H(unvault_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| U(unvault_tx<br/>Begin the unvaulting process)
-  U -->|"<code>&lt;H(tocold_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| C(tocold_tx)
-  U -->|"<code>&lt;block_delay&gt; OP_CSV<br />&lt;hot_pubkey&gt; OP_CHECKSIG</code>"| D(<code>tohot_tx</code>)
+  U -->|"(cold sweep)<br/><code>&lt;H(tocold_tx)&gt; OP_CHECKTEMPLATEVERIFY</code>"| C(tocold_tx)
+  U -->|"(delayed hot spend)<br/><code>&lt;block_delay&gt; OP_CSV<br />&lt;hot_pubkey&gt; OP_CHECKSIG</code>"| D(<code>tohot_tx</code>)
   C -->|"<code>&lt;cold_pubkey&gt; OP_CHECKSIG</code>"| E(some undefined destination)
 ```
 
@@ -108,43 +111,58 @@ When we create the vault, we encumber the coin with a `scriptPubKey` that looks 
 ```python
 [unvault_ctv_hash, OP_CHECKTEMPLATEVERIFY]
 ```
-where the first item is a hash of the tree of template transactions (the tree illustrated above). 
+where the first item is a hash of the tree of template transactions (basically, the 
+tree illustrated above). 
 
 #### Why CTV?
 
-The enforced flow of a vault is currently only possible if we presign `tocold_tx` and `tohot_tx`,
-ensure we hold onto the transaction data, and then destroy the key. This locks the spend path
-of the coins into the two prewritten transactions. But it saddles us with the operational burden
-of persisting that critical data indefinitely.
+With today's consensus rules, the enforced flow of a vault is only possible if we
+presign `tocold_tx` and `tohot_tx`, hang onto them, and then destroy the key. This
+locks the spend path of the coins into the two prewritten transactions. But it saddles
+us with the operational burden of persisting that critical data indefinitely. 
 
-Use of `OP_CHECKTEMPLATEVERIFY` allows us to use a covenant structure and avoid having to rely
-on presigned transactions. With `<hash> OP_CTV`, we can ensure that *consensus itself* enforces all the
-ways we can spend an output.
+With large numbers of vaults, ensuring this durability becomes a challenge. And for
+small-scale users, the data liability is yet another failure point during self-custody.
 
-Other consensus change proposals can do this, but CTV is very simple and easy to reason about. It
-requires pre-computing the tree of all possible spend paths.
+Key deletion during vault creation is also 
+- hard to prove to auditors, and
+- hard to prove to yourself.
+
+Use of `OP_CHECKTEMPLATEVERIFY` allows us to use a covenant structure and avoid having
+to rely on presigned transactions or ephemeral keys. With `<hash> OP_CTV`, we can
+ensure that the vault operation is enforced by consensus itself, and the vault
+transaction data can be generated deterministically without additional storage needs.
+
+Other consensus change proposals can do this, but CTV is very simple and easy to reason
+about.
 
 ### Unvaulting
 
 ![image](https://user-images.githubusercontent.com/73197/156897769-45ee85cc-e626-4b7a-9bd4-df471b1b9026.png)
 
 
-When we initiate an unvault, we broadcast a transaction that satisfies the `OP_CTV` script above;
-the script encumbering the unvault output looks something like
+When we initiate an unvault, we broadcast a transaction that satisfies the `OP_CTV`
+script above; meaning that the transaction we broadcast has to CTV-hash to the value
+cited (including outputs that possibly commit to subsequent CTV encumberances - hence
+the tree). This doesn't require any signing, since the authentication is all in the
+hash.
+
+The script encumbering the unvault output looks something like
 ```python
-    def unvault_redeemScript(self) -> CScript:
-        return CScript(
-            [
-                script.OP_IF,
-                    self.block_delay, script.OP_CHECKSEQUENCEVERIFY, script.OP_DROP,
-                    self.hot_pubkey.sec(), script.OP_CHECKSIG,
-                script.OP_ELSE,
-                    self.tocold_ctv_hash, OP_CHECKTEMPLATEVERIFY,
-            ]
-        )
+def unvault_redeemScript(self) -> CScript:
+    return CScript(
+        [
+            script.OP_IF,
+                self.block_delay, script.OP_CHECKSEQUENCEVERIFY, script.OP_DROP,
+                self.hot_pubkey.sec(), script.OP_CHECKSIG,
+            script.OP_ELSE,
+                self.tocold_ctv_hash, OP_CHECKTEMPLATEVERIFY,
+        ]
+    )
 ```
 This ensures we have two choices: spend immediately to the cold wallet, or wait a few blocks and spend
-to the hot wallet. 
+to the hot wallet. Of course, more complicated unvault conditions could be written in
+here.
 
 ### Detecting theft
 
@@ -201,4 +219,5 @@ is an interesting approach.
 ## Prior work
 
 - Vaults by kanzure: https://github.com/kanzure/python-vaults
-- `OP_CTV` PR by JeremyRubin: https://github.com/bitcoin/bitcoin/pull/21702
+- `OP_CTV` PR by JeremyRubin: https://utxos.org, https://github.com/bitcoin/bitcoin/pull/21702
+- Vaults by JeremyRubin: https://rubin.io/bitcoin/2021/12/07/advent-10/
