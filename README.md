@@ -183,9 +183,10 @@ additional `OP_CTV` to encumber the "swept" coins for spending by only the cold 
 
 ## Fee management
 
-Because coins may remain vaulted for long periods of time, the unvault process is subject to 
-changes in the fee market. Because use of OP_CTV requires precommiting to a tree of possible
-outputs, we cannot use RBF to dynamically adjust feerate of unvaulting transactions.
+Because coins may remain vaulted for long periods of time, the unvault process is
+sensitive to changes in the fee market. Because use of OP_CTV requires precommiting to
+a tree of all possible specific outputs and the number of inputs, we cannot use RBF to
+dynamically adjust feerate of unvaulting transactions.
 
 In this implementation, we make use of [anchor outputs](https://bitcoinops.org/en/topics/anchor-outputs/)
 in order to allow mummified unvault transactions to have their feerate adjusted dynamically.
@@ -216,8 +217,26 @@ like CPFP via anchor outputs would be most welcome.
 [Transaction sponsors](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2020-September/018168.html)
 is an interesting approach.
 
+
+## Patterns for industrial users
+
+One can imagine that large custodians of bitcoin might "tranche" up a vault pattern like
+this into fixed sizes of bitcoin, and have on-demand unvaults that have block-delay
+parameters compatible with their service-level agreements. This provides a good deal of
+assurance that coin flows are safe and auditable while still remaining readily
+liquid.
+
+
+## Running tests
+
+```sh
+$ pip install pytest && pytest
+```
+
+
 ## Prior work
 
 - Vaults by kanzure: https://github.com/kanzure/python-vaults
 - `OP_CTV` PR by JeremyRubin: https://utxos.org, https://github.com/bitcoin/bitcoin/pull/21702
-- Vaults by JeremyRubin: https://rubin.io/bitcoin/2021/12/07/advent-10/
+- Vaults by JeremyRubin: https://rubin.io/bitcoin/2021/12/07/advent-10/ (and probably
+  others)

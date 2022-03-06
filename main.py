@@ -530,13 +530,13 @@ class VaultExecutor:
         self.log(bold(f"\n## Transaction {yellow(tx.GetTxid()[::-1].hex())}"))
         self.log(f"{tx}")
         self.log()
-        self.log(f"### Raw hex")
+        self.log("### Raw hex")
         self.log(hx)
 
         return tx, hx
 
 
-def generateblocks(rpc: BitcoinRPC, n: int = 1, addr: str = None):
+def generateblocks(rpc: BitcoinRPC, n: int = 1, addr: str = None) -> t.List[str]:
     if not addr:
         addr = (
             HDPrivateKey.from_seed(b"yaddayah")
@@ -711,7 +711,7 @@ def alert_on_unvault(original_coin_txid: TxidStr):
     if unvault_location:
         print(f"Unvault txn detected in {red(unvault_location)}!")
         print(f"If this is unexpected, {red('sweep to cold now')} with ")
-        print(yellow("\n  ./main.py to-cold {original_coin_txid}"))
+        print(yellow(f"\n  ./main.py to-cold {original_coin_txid}"))
         sys.exit(1)
 
 
