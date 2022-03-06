@@ -181,6 +181,15 @@ You'll notice that the hot-path requires signing with the hot private key to cla
 want to be able to respond immediately, and not have to dig out our cold private keys, we use an 
 additional `OP_CTV` to encumber the "swept" coins for spending by only the cold wallet key.
 
+
+### Spending to hot
+
+Otherwise, if we've intentionally unvaulted, we wait for the timeout to elapse 
+(`./main.py generate-blocks 10`), and then spend our funds with the hot wallet.
+
+![image](https://user-images.githubusercontent.com/73197/156934212-268bb2f8-841b-4247-ad28-49bdf365e410.png)
+
+
 ## Fee management
 
 Because coins may remain vaulted for long periods of time, the unvault process is
