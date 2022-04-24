@@ -35,6 +35,7 @@ Example usage:
   ./main.py to-cold $TXID
 
 """
+import sys
 import struct
 import hashlib
 import sys
@@ -79,6 +80,10 @@ RawTxStr = str
 BLANK_INPUT = CMutableTxIn
 
 
+def no_output(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
 @dataclass(frozen=True)
 class Coin:
     outpoint: COutPoint
@@ -103,6 +108,8 @@ class Wallet:
     privkey: PrivateKey
     coins: t.List[Coin]
     network: str
+
+    log: t.Callable = no_output
 
     @classmethod
     def generate(cls, seed: bytes, network: str = "regtest") -> "Wallet":
@@ -453,10 +460,6 @@ yellow = make_color(esc(33), FG_END)
 blue = make_color(esc(34), FG_END)
 cyan = make_color(esc(36), FG_END)
 bold = make_color(esc(1), esc(22))
-
-
-def no_output(*args, **kwargs):
-    pass
 
 
 @dataclass
