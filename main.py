@@ -35,6 +35,7 @@ Example usage:
   ./main.py to-cold $TXID
 
 """
+import sys
 import struct
 import hashlib
 import sys
@@ -42,7 +43,6 @@ import pprint
 import typing as t
 from dataclasses import dataclass
 
-from bitcoin import SelectParams
 from bitcoin.core import (
     CTransaction,
     CMutableTransaction,
@@ -72,11 +72,16 @@ Sats = int
 SatsPerByte = int
 
 TxidStr = str
+UtxoStr = str
 Txid = str
 RawTxStr = str
 
 # For use with template transactions.
 BLANK_INPUT = CMutableTxIn
+
+
+def no_output(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,8 @@ class Wallet:
     coins: t.List[Coin]
     network: str
 
+    log: t.Callable = no_output
+
     @classmethod
     def generate(cls, seed: bytes, network: str = "regtest") -> "Wallet":
         return cls(
@@ -114,11 +121,12 @@ class Wallet:
 
     def fund(self, rpc: BitcoinRPC) -> Coin:
         fund_addr = self.privkey.point.p2wpkh_address(network=self.network)
-        rpc.generatetoaddress(110, fund_addr)
+
+        if network == "regtest":
+            rpc.generatetoaddress(110, fund_addr)
 
         scan = scan_utxos(rpc, fund_addr)
         assert scan["success"]
-
         for utxo in scan["unspents"]:
             self.coins.append(
                 Coin(
@@ -129,17 +137,17 @@ class Wallet:
                 )
             )
 
+        if len(self.coins) == 0:
+            if self.network == "regtest":
+                self.log(
+                    "Your regtest is out of subsidy - please wipe the datadir and restart."
+                )
+            else:
+                self.log(f"We need funds in {fund_addr}. Get some and try again.")
+            os.exit(1)
+
         # Earliest coins first.
-        self.coins = [
-            c for c in sorted(self.coins, key=lambda i: i.height) if c.amount > COIN
-        ]
-        try:
-            return self.coins.pop(0)
-        except IndexError:
-            raise RuntimeError(
-                "Your regtest is out of subsidy - "
-                "please wipe the datadir and restart."
-            )
+        self.coins = [c for c in sorted(self.coins, key=lambda i: i.height)]
 
 
 @dataclass
@@ -454,10 +462,6 @@ cyan = make_color(esc(36), FG_END)
 bold = make_color(esc(1), esc(22))
 
 
-def no_output(*args, **kwargs):
-    pass
-
-
 @dataclass
 class VaultExecutor:
     plan: VaultPlan
@@ -619,7 +623,6 @@ class VaultScenario:
 
     @classmethod
     def from_network(cls, network: str, seed: bytes, coin: Coin = None, **plan_kwargs):
-        SelectParams(network)
         from_wallet = Wallet.generate(b"from-" + seed)
         fee_wallet = Wallet.generate(b"fee-" + seed)
         cold_wallet = Wallet.generate(b"cold-" + seed)
@@ -648,20 +651,19 @@ class VaultScenario:
         )
 
     @classmethod
-    def for_demo(cls, original_coin_txid: TxidStr = None) -> 'VaultScenario':
+    def for_demo(cls, original_coin: UtxoStr = None) -> "VaultScenario":
         """
         Instantiate a scenario for the demo, optionally resuming an existing
         vault using the txid of the coin we spent into it.
         """
         coin_in = None
-        if original_coin_txid:
+        if original_coin:
             # We're resuming a vault
-            rpc = BitcoinRPC(net_name="regtest")
-            coin_in = Coin.from_txid(original_coin_txid, 0, rpc)
+            rpc = BitcoinRPC(net_name="signet")
+            txid, outn = original_coin.split(":")
+            coin_in = Coin.from_txid(txid, int(outn), rpc)
 
-        c = VaultScenario.from_network(
-            "regtest", seed=b"demo", coin=coin_in, block_delay=10
-        )
+        c = VaultScenario.from_network("signet", b"demo", coin=coin_in, block_delay=10)
         c.exec.log = lambda *args, **kwargs: print(*args, file=sys.stderr, **kwargs)
 
         return c
@@ -677,12 +679,12 @@ def vault():
 
     c.exec.send_to_vault(c.coin_in, c.from_wallet.privkey)
     assert not c.exec.search_for_unvault()
-    original_coin_txid = c.coin_in.outpoint.hash[::-1].hex()
-    print(original_coin_txid)
+    original_coin = f"{c.coin_in.outpoint.hash[::-1].hex()}:{c.coin_in.outpoint.n}"
+    print(original_coin)
 
 
 @cli.cmd
-def unvault(original_coin_txid: TxidStr):
+def unvault(original_coin: UtxoStr):
     """
     Start the unvault process with an existing vault, based on the orignal coin
     input.
@@ -690,9 +692,9 @@ def unvault(original_coin_txid: TxidStr):
     We assume the original coin has a vout index of 0.
 
     Args:
-        original_coin_txid: the txid of the original coin we spent into the vault.
+        original_coin: the txid of the original coin we spent into the vault.
     """
-    c = VaultScenario.for_demo(original_coin_txid)
+    c = VaultScenario.for_demo(original_coin)
     c.exec.start_unvault()
 
 
@@ -703,30 +705,30 @@ def generate_blocks(n: int):
 
 
 @cli.cmd
-def alert_on_unvault(original_coin_txid: TxidStr):
-    c = VaultScenario.for_demo(original_coin_txid)
+def alert_on_unvault(original_coin: UtxoStr):
+    c = VaultScenario.for_demo(original_coin)
     c.exec.log = no_output
     unvault_location = c.exec.search_for_unvault()
 
     if unvault_location:
         print(f"Unvault txn detected in {red(unvault_location)}!")
         print(f"If this is unexpected, {red('sweep to cold now')} with ")
-        print(yellow(f"\n  ./main.py to-cold {original_coin_txid}"))
+        print(yellow(f"\n  ./main.py to-cold {original_coin}"))
         sys.exit(1)
 
 
 @cli.cmd
-def to_hot(original_coin_txid: TxidStr):
+def to_hot(original_coin: UtxoStr):
     """Spend funds to the hot wallet."""
-    c = VaultScenario.for_demo(original_coin_txid)
+    c = VaultScenario.for_demo(original_coin)
     tx = c.exec.get_tohot_tx(c.hot_wallet.privkey)
     _broadcast_final(c, tx, 'hot')
 
 
 @cli.cmd
-def to_cold(original_coin_txid: TxidStr):
+def to_cold(original_coin: UtxoStr):
     """Sweep funds to the cold wallet."""
-    c = VaultScenario.for_demo(original_coin_txid)
+    c = VaultScenario.for_demo(original_coin)
     tx = c.exec.get_tocold_tx()
     _broadcast_final(c, tx, 'cold')
 

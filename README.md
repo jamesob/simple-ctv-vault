@@ -76,7 +76,12 @@ $ cd simple-ctv-vault
 $ pip install -r requirements.txt
 
 # build this bitcoin branch
-#  https://github.com/JeremyRubin/bitcoin/tree/checktemplateverify-rebase-4-15-21
+#  https://github.com/JeremyRubin/bitcoin/tree/checktemplateverify-signet-23.0-alpha
+
+# then start it on signet:
+$ bitcoind -signet -signetchallenge=512102946e8ba8eca597194e7ed90377d9bbebc5d17a9609ab3e35e706612ee882759351ae -signetseednode=50.18.75.225 -txindex=1 &
+
+# or, for running on regtest:
 $ bitcoind -regtest -txindex=1 &
 ```
 
@@ -85,14 +90,15 @@ Okay, we're ready to go.
 ### Creating a vault
 
 ```sh
-$ TXID=$(./main.py vault)
+$ ORIGINAL_COIN=$(./main.py vault)
 ```
 
 ![image](https://user-images.githubusercontent.com/73197/156897173-c8095fc6-ce39-47cf-85d7-3ac0f86ca2c8.png)
 
 
-At this point, we've generated a coin on regtest and have spent it into a new vault.
-`$TXID` corresponds to the transaction ID of the coin we spent into the vault,
+At this point, we've generated a coin on signet and have spent it into a new vault.
+`$ORIGINAL_COIN` corresponds to the transaction ID + output number of the coin we
+spent into the vault,
 which is the only piece of information we need to reconstruct the vault plan and
 resume operations.
 
